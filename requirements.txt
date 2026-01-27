@@ -1,0 +1,5 @@
+chainlit
+pandas
+pydantic
+google-genai
+openpyxl
