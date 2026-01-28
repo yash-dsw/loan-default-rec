@@ -59,8 +59,8 @@ class NBAAgent:
                 "max_tokens": self.max_tokens
             }
             
-            with httpx.Client(timeout=30.0) as client:
-                response = client.post(self.api_url, headers=self.headers, json=payload)
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(self.api_url, headers=self.headers, json=payload)
                 response.raise_for_status()
                 result = response.json()
                 
@@ -93,34 +93,188 @@ class NBAAgent:
             }
     
     def _fallback(self, d: Dict[str, Any]) -> str:
-        """Fallback recommendation"""
+        """Fallback recommendation in structured format"""
         dpd = d.get("dpd", 0)
-        if dpd <= 30: action = "Reminder Call"
-        elif dpd <= 60: action = "Field Visit"
-        elif dpd <= 90: action = "Formal Demand Letter"
-        else: action = "Legal Notice Review"
+        response = d.get("response_to_calls", "None")
+        field_outcome = d.get("field_visit_outcome", "Not Done")
         
-        return f"""**🎯 Recommended Action:** {action}
+        # Determine borrower intent
+        if response == "Positive" or field_outcome == "Promise to Pay":
+            borrower_intent = "Cooperative"
+        elif response == "None" or field_outcome == "Not Done":
+            borrower_intent = "Non-responsive"
+        else:
+            borrower_intent = "Hostile"
+        
+        # Determine action based on NPA stage
+        action = "One-Time Settlement (OTS)"
+        likelihood = "Medium"
+        rationale = f"With DPD at {dpd} days in NPA stage, a negotiated settlement approach is recommended as the fallback strategy due to API unavailability."
+        
+        return f"""**ACTION_TITLE:** {action}
 
-**📊 Key Factors:**
-- DPD: {dpd} days
-- Stage: {d.get('delinquency_stage', 'Unknown')}
-- Fallback due to API error
+**SUCCESS_LIKELIHOOD:** {likelihood}
 
-**📈 Success Likelihood:** Low — Unable to assess, using conservative approach
+**RATIONALE:** {rationale}
 
-**🔄 If Action Fails:** Escalate to supervisor
+**CONFIDENCE:** Low
+**BORROWER_INTENT:** {borrower_intent}
 
-**⚖️ Compliance:** Follow RBI Fair Practice Code"""
+**KEY_FACTORS:**
+- DPD: {dpd} days — Account is in NPA stage
+- Stage: {d.get('delinquency_stage', 'NPA')} — Legal action is eligible
+- Response: {response} — Based on call response history
+- Field Visit: {field_outcome} — Last field visit outcome
+- Fallback recommendation — API error occurred
+
+**IF_ACTION_FAILS:** Escalate to supervisor for manual review
+
+**COMPLIANCE:**
+- Follow RBI Fair Practice Code for all communications
+- Document all recovery attempts as per regulatory requirements"""
     
     def format_output(self, r: Dict[str, Any]) -> str:
-        """Format result for display"""
-        header = f"""#### {r['account_id']} | {r['customer_id']}
-**Stage:** {r['stage']} · **DPD:** {r['dpd']} · **Outstanding:** ₹{r['outstanding']:,.0f}
-
----
-"""
-        output = header + r["recommendation"]
+        """Format result for display with structured NPA output"""
+        recommendation = r.get("recommendation", "")
+        
+        # Parse the structured response
+        parsed = self._parse_recommendation(recommendation)
+        
+        # Build formatted output
+        output_lines = []
+        
+        # Header with action title
+        action_title = parsed.get("action_title", "Recovery Action")
+        output_lines.append(f"### ⚙️ {action_title}")
+        output_lines.append("")
+        
+        # Success Likelihood badge
+        likelihood = parsed.get("success_likelihood", "Medium")
+        likelihood_emoji = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(likelihood, "🟡")
+        output_lines.append(f"**☑ Success Likelihood:** {likelihood_emoji} **{likelihood}**")
+        output_lines.append("")
+        
+        # Rationale paragraph (italicized)
+        rationale = parsed.get("rationale", "")
+        if rationale:
+            output_lines.append(f"*{rationale}*")
+            output_lines.append("")
+        
+        # Attribute table (removed SMA/NPA row since all are NPA)
+        confidence = parsed.get("confidence", "Medium")
+        borrower_intent = parsed.get("borrower_intent", "Unknown")
+        confidence_emoji = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(confidence, "🟡")
+        
+        output_lines.append("| Attribute | Value |")
+        output_lines.append("|:----------|:------|")
+        output_lines.append(f"| Confidence | {confidence_emoji} {confidence} |")
+        output_lines.append(f"| Borrower Intent | {borrower_intent} |")
+        output_lines.append("")
+        
+        # Key Factors section
+        key_factors = parsed.get("key_factors", [])
+        if key_factors:
+            output_lines.append("#### 📋 Key Factors:")
+            output_lines.append("")
+            for factor in key_factors:
+                output_lines.append(f"- {factor}")
+            output_lines.append("")
+        
+        # Action Basis section (new)
+        action_basis = parsed.get("action_basis", "")
+        if action_basis:
+            output_lines.append(f"#### 📜 Action Basis:")
+            output_lines.append("")
+            output_lines.append(f"{action_basis}")
+            output_lines.append("")
+        
+        # Execution Guidance section (new)
+        execution_guidance = parsed.get("execution_guidance", [])
+        if execution_guidance:
+            output_lines.append("#### 📝 Execution Guidance:")
+            output_lines.append("")
+            for point in execution_guidance:
+                output_lines.append(f"- {point}")
+            output_lines.append("")
+        
+        # If Action Fails section
+        fallback = parsed.get("if_action_fails", "")
+        if fallback:
+            output_lines.append(f"**🔄 If Action Fails:** {fallback}")
+            output_lines.append("")
+        
+        # Compliance section
+        compliance = parsed.get("compliance", [])
+        if compliance:
+            output_lines.append("#### ⚖️ Compliance:")
+            output_lines.append("")
+            for item in compliance:
+                output_lines.append(f"- {item}")
+            output_lines.append("")
+        
+        # Add error note if any
         if r.get("error"):
-            output += f"\n\n⚠️ *{r['error']}*"
-        return output
+            output_lines.append(f"⚠️ *{r['error']}*")
+        
+        return "\n".join(output_lines)
+    
+    def _parse_recommendation(self, text: str) -> Dict[str, Any]:
+        """Parse structured recommendation text"""
+        result = {
+            "action_title": "Recovery Action",
+            "success_likelihood": "Medium",
+            "rationale": "",
+            "confidence": "Medium",
+            "borrower_intent": "Unknown",
+            "key_factors": [],
+            "action_basis": "",
+            "execution_guidance": [],
+            "if_action_fails": "",
+            "compliance": []
+        }
+        
+        if not text:
+            return result
+        
+        lines = text.strip().split("\n")
+        current_section = None
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Parse structured fields
+            if line.startswith("**ACTION_TITLE:**"):
+                result["action_title"] = line.replace("**ACTION_TITLE:**", "").strip()
+            elif line.startswith("**SUCCESS_LIKELIHOOD:**"):
+                result["success_likelihood"] = line.replace("**SUCCESS_LIKELIHOOD:**", "").strip()
+            elif line.startswith("**RATIONALE:**"):
+                result["rationale"] = line.replace("**RATIONALE:**", "").strip()
+            elif line.startswith("**CONFIDENCE:**"):
+                result["confidence"] = line.replace("**CONFIDENCE:**", "").strip()
+            elif line.startswith("**BORROWER_INTENT:**"):
+                result["borrower_intent"] = line.replace("**BORROWER_INTENT:**", "").strip()
+            elif line.startswith("**KEY_FACTORS:**"):
+                current_section = "key_factors"
+            elif line.startswith("**ACTION_BASIS:**"):
+                result["action_basis"] = line.replace("**ACTION_BASIS:**", "").strip()
+                current_section = None
+            elif line.startswith("**EXECUTION_GUIDANCE:**"):
+                current_section = "execution_guidance"
+            elif line.startswith("**IF_ACTION_FAILS:**"):
+                result["if_action_fails"] = line.replace("**IF_ACTION_FAILS:**", "").strip()
+                current_section = None
+            elif line.startswith("**COMPLIANCE:**"):
+                current_section = "compliance"
+            elif line.startswith("- "):
+                # Add to current list section
+                item = line[2:].strip()
+                if current_section == "key_factors":
+                    result["key_factors"].append(item)
+                elif current_section == "execution_guidance":
+                    result["execution_guidance"].append(item)
+                elif current_section == "compliance":
+                    result["compliance"].append(item)
+        
+        return result

@@ -112,7 +112,15 @@ async def main(message: cl.Message):
             
             # Get recommendation
             result = await nba_agent.get_recommendation(record)
-            output = nba_agent.format_output(result)
+            formatted_output = nba_agent.format_output(result)
+            
+            # Add account header
+            account_header = f"""#### 📄 {account_id} | {record.get('customer_id', 'Unknown')}
+**Stage:** NPA · **DPD:** {record.get('dpd', 0)} · **Outstanding:** ₹{record.get('outstanding_amount', 0):,.0f}
+
+---
+"""
+            output = account_header + formatted_output
             
             # Update with result
             analyze_msg.content = output
