@@ -1,0 +1,223 @@
+/* =======================================================================
+   GLOBAL & LIGHT MODE DEFAULTS
+   These apply by default (Light Mode)
+   ======================================================================= */
+
+body {
+  background-color: #F8F8F8 !important;
+  color: #000 !important;
+}
+
+/* AI Assistant Message Box (Light) */
+.ai-message {
+  background-color: #fff !important;
+  width: 100% !important;
+  text-align: left !important;
+  border-radius: 10px !important;
+  border: 1px solid #002c77 !important;
+  margin: 10px !important;
+  padding: 10px !important;
+  color: #000 !important;
+}
+
+/* User Message Box (Light) */
+.group {
+  background: #b1c6ee !important;
+  width: 96% !important;
+  border-radius: 10px !important;
+  text-align: center !important;
+  margin: 0 auto !important;
+  color: #000 !important;
+}
+
+.group .bg-accent {
+  background: #b1c6ee !important;
+  color: #000 !important;
+}
+
+/* Input Message Box (Light) */
+#message-composer {
+  max-width: 100% !important;
+  width: 700px !important;
+  padding-right: 20px !important;
+  background: #fff !important;
+  border-radius: 10px !important;
+  color: #000 !important;
+}
+
+/* Tables (Light) */
+table {
+  text-indent: 0;
+  border-color: inherit;
+  background-color: #b1c6ee;
+  border-collapse: collapse;
+  color: #000 !important;
+}
+
+table th {
+  color: #000 !important;
+}
+
+/* =======================================================================
+   DARK MODE OVERRIDES (PURE BLACK)
+   These trigger when Chainlit adds the .dark class
+   ======================================================================= */
+
+/* Dark Mode Background - Pure Black */
+.dark body {
+  background-color: #000000 !important;
+  color: #ffffff !important;
+}
+
+/* Dark Mode AI Message - Pure Black with Yellow Border */
+.dark .ai-message {
+  background-color: #000000 !important;
+  color: #ffffff !important;
+  border: 1px solid #b1c6ee !important;
+}
+
+/* Dark Mode User Message */
+/* Using a dark gold/brown so it fits the black theme but remains distinct */
+.dark .group {
+  background: #131002 !important;
+  color: #ffffff !important;
+  border: 1px solid #b1c6ee !important;
+}
+
+.dark .group .bg-accent {
+  background: #131002 !important;
+  color: #ffffff !important;
+}
+
+/* Dark Mode Input Box - Pure Black */
+.dark #message-composer {
+  background: #000000 !important;
+  color: #ffffff !important;
+  border: 1px solid #333333 !important;
+  /* Subtle grey border to see the box */
+}
+
+/* Dark Mode Tables - Black */
+.dark table {
+  background-color: #111111 !important;
+  color: #ffffff !important;
+  border: 1px solid #333 !important;
+}
+
+/* =======================================================================
+   SHARED ELEMENTS (BRANDING)
+   These keep your yellow branding in both modes
+   ======================================================================= */
+
+/* Send button */
+#chat-submit {
+  background: #002c77 !important;
+}
+
+/* Attachment icon */
+.inline-block {
+  color: #002c77 !important;
+}
+
+/* New chat btn */
+#new-chat-button {
+  color: #002c77 !important;
+}
+
+#new-chat-button:hover {
+  background-color: #002c77 !important;
+  color: #fff !important;
+}
+
+/* Theme toggle button */
+#theme-toggle {
+  color: #002c77 !important;
+}
+
+#theme-toggle:hover {
+  background-color: #002c77 !important;
+  color: #fff !important;
+}
+
+#confirm {
+  background-color: #002c77 !important;
+  color: #fff !important;
+}
+
+/* Copyright footer text size fix */
+.text-xs.text-muted-foreground span {
+  font-size: 0 !important;
+}
+
+.text-xs.text-muted-foreground span::after {
+  content: "Copyright © 2025 Data Science Wizards Private Limited. All Rights Reserved." !important;
+  font-size: 12px !important;
+  color: #a0a0a0 !important;
+}
+
+/* Avatar styling */
+/* img[alt="Assistant"] {
+  width: 40px !important;
+  height: 40px !important;
+  border-radius: 30% !important;
+  object-fit: cover !important;
+}
+
+.avatar img, 
+.rounded-full, 
+.rounded-full img {
+  width: 40px !important;
+  height: 40px !important;
+  border-radius: 50% !important;
+  object-fit: cover !important;
+} */
+
+/* =======================================================================
+   CHART / IMAGE DISPLAY - FULL WIDTH
+   Makes inline images expand to fill the chat message width
+   ======================================================================= */
+
+/* Override the max-w-[300px] constraint on image container */
+.max-w-\[300px\] {
+  max-width: 100% !important;
+  width: 100% !important;
+}
+
+/* Target the flex container holding the image */
+.flex.flex-col.gap-4>.w-full.max-w-\[300px\] {
+  max-width: 100% !important;
+  width: 100% !important;
+}
+
+/* Make inline images (charts) full width */
+.inline-image,
+img.inline-image {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+/* Target Chainlit's image container */
+.message-content img:not(.avatar):not([alt="Assistant"]):not(.rounded-full) {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+  display: block !important;
+  margin: 16px 0 !important;
+  border-radius: 8px !important;
+}
+
+/* Ensure the rounded container also uses full width */
+.rounded-sm.bg-accent.overflow-hidden {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+/* Target element containers that hold images */
+.elements-container,
+.element-link,
+[class*="element"] img {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+}

@@ -1,0 +1,5 @@
+loan_id,secured_unsecured,dpd,outstanding_amount,borrower_type,employment_stability,repayment_history,loan_vintage_months,collateral_quality,geographic_location,pincode,customer_responsiveness,cost_of_recovery,expected_recovery,time_value_recovery_months,regulatory_constraints,bank_portfolio_strategy,jurisdiction,cibil_score,loan_officer_remarks,documentation_type
+HL001,Secured,25,3500000,Individual-Salaried,Stable,Good,18,High,Urban,560001,High,50000,3450000,6,None,Retention,Bangalore DRT,780,Temporary cash flow issue - borrower cooperative,Complete
+HL002,Secured,75,6200000,Individual-SelfEmployed,Moderate,Irregular,42,Medium,Semi-Urban,411001,Medium,180000,5600000,12,SARFAESIEligible,RecoveryFocused,Pune DRT,655,Business slowdown - open to restructuring,Complete
+HL003,Secured,130,4800000,Individual-Salaried,Unstable,Poor,60,High,Urban,110001,Low,300000,4200000,18,SARFAESIEligible,AggressiveRecovery,Delhi DRT,590,Avoiding communication - legal notice sent,Complete
+HL004,Secured,210,9000000,Corporate,Weak,Defaulted,84,Low,Tier-2,700001,Non-responsive,750000,6000000,30,IBCApplicable,Exit,Kolkata DRT,520,Willful default indicators present,Partial
