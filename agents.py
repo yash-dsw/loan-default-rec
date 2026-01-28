@@ -6,6 +6,8 @@ Uses OpenRouter API for LLM inference
 import os
 from typing import Dict, Any
 import httpx
+import json
+import asyncio
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -45,10 +47,13 @@ class NBAAgent:
 **Last Action:** {d.get('last_action_taken')} ({d.get('days_since_last_action')} days ago)
 **Collateral:** {d.get('collateral_type')} ({d.get('collateral_quality')}) | Liquidity: {d.get('collateral_liquidity')} | Cost: ₹{d.get('cost_of_recovery', 0):,.0f} | Expected: ₹{d.get('expected_recovery', 0):,.0f}
 **Legal:** Notice: {d.get('legal_notice_sent')} | Possession: {d.get('possession')} | Auction: {d.get('auction')} | Restructure: {d.get('restructure_offered')}/{d.get('restructure_accepted')} | OTS: {d.get('ots_offered')}/{d.get('ots_accepted')}
-**SARFAESI Ready:** {d.get('sarfaesi_ready_flag')} | Charge Registered: {d.get('charge_registered_flag')} | DSC: {d.get('dsc_available_flag')}"""
+**SARFAESI Ready:** {d.get('sarfaesi_ready_flag')} | Charge Registration: {d.get('charge_registered_flag')} | DSC: {d.get('dsc_available_flag')}
+**Documents:** Sanction Letter: {d.get('sanction_letter_flag')} | Hypothecation Deed: {d.get('hypothecation_deed_flag')} | Charge Particulars: {d.get('charge_instrument_flag')}
+**Identity/Corporate:** DIN: {d.get('director_din_available') if 'corporate' in str(d.get('loan_type')).lower() else 'N/A (Individual)'} | PAN/Signatory: {d.get('authorized_signatory_pan')} | CS Membership: {d.get('cs_membership_no_flag')} | Cert of Reg: {d.get('certificate_of_registration_flag')}
+**Enforcement Docs:** Magistrate Application Docs: {d.get('magistrate_application_docs', 'No')}"""
     
-    async def get_recommendation(self, account_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Get NBA recommendation for a single account"""
+    async def get_recommendation_stream(self, account_data: Dict[str, Any]):
+        """Get NBA recommendation as a stream of tokens"""
         try:
             borrower_data = self.format_borrower_data(account_data)
             prompt = NBA_RECOMMENDATION_PROMPT.format(borrower_data=borrower_data)
@@ -57,41 +62,60 @@ class NBAAgent:
                 "model": self.model_name,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": self.temperature,
-                "max_tokens": self.max_tokens
+                "max_tokens": self.max_tokens,
+                "stream": True
             }
             
             async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(self.api_url, headers=self.headers, json=payload)
-                response.raise_for_status()
-                result = response.json()
-                
-                if "choices" in result and len(result["choices"]) > 0:
-                    recommendation = result["choices"][0]["message"]["content"]
-                else:
-                    raise ValueError("Invalid API response")
-            
-            return {
-                "account_id": account_data.get("account_id", "Unknown"),
-                "customer_id": account_data.get("customer_id", "Unknown"),
-                "stage": account_data.get("delinquency_stage", "Unknown"),
-                "dpd": account_data.get("dpd", 0),
-                "outstanding": account_data.get("outstanding_amount", 0),
-                "recommendation": recommendation,
-                "success": True,
-                "error": None
-            }
-            
+                async with client.stream("POST", self.api_url, headers=self.headers, json=payload) as response:
+                    response.raise_for_status()
+                    
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        
+                        data_str = line[6:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        
+                        try:
+                            data = json.loads(data_str)
+                            if "choices" in data and len(data["choices"]) > 0:
+                                delta = data["choices"][0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    yield content
+                        except json.JSONDecodeError:
+                            continue
+
+        except (GeneratorExit, asyncio.CancelledError):
+            # Silence expected exit signals to allow clean up (crucial for Python 3.13)
+            return
         except Exception as e:
-            return {
-                "account_id": account_data.get("account_id", "Unknown"),
-                "customer_id": account_data.get("customer_id", "Unknown"),
-                "stage": account_data.get("delinquency_stage", "Unknown"),
-                "dpd": account_data.get("dpd", 0),
-                "outstanding": account_data.get("outstanding_amount", 0),
-                "recommendation": self._fallback(account_data),
-                "success": False,
-                "error": str(e)
-            }
+            # Yield error information and fallback for actual runtime exceptions
+            yield f"\n⚠️ Error during streaming: {str(e)}\n"
+            yield self._fallback(account_data)
+
+    async def get_recommendation(self, account_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Get NBA recommendation (blocking/accumulated)"""
+        full_text = ""
+        async for chunk in self.get_recommendation_stream(account_data):
+            # Check if this is a fallback already
+            if "**ACTION_TITLE:**" in chunk and not full_text:
+                full_text = chunk
+                break
+            full_text += chunk
+        
+        return {
+            "account_id": account_data.get("account_id", "Unknown"),
+            "customer_id": account_data.get("customer_id", "Unknown"),
+            "stage": account_data.get("delinquency_stage", "Unknown"),
+            "dpd": account_data.get("dpd", 0),
+            "outstanding": account_data.get("outstanding_amount", 0),
+            "recommendation": full_text,
+            "success": "⚠️ Error" not in full_text,
+            "error": None if "⚠️ Error" not in full_text else "Streaming error occurred"
+        }
     
     def _fallback(self, d: Dict[str, Any]) -> str:
         """Fallback recommendation in structured format based on new data schema"""
@@ -105,8 +129,24 @@ class NBAAgent:
         sarfaesi_ready = str(d.get("sarfaesi_ready_flag", "No")).lower()
         legal_notice = str(d.get("legal_notice_sent", "No")).lower()
         possession = str(d.get("possession", "No")).lower()
+        loan_type = str(d.get("loan_type", "Home Loan")).lower()
         
-        # Determine borrower intent based on new data values
+        # Determine symbolic & physical possession readiness based on documents
+        charge_reg = str(d.get("charge_registered_flag", "No")).lower()
+        dsc = str(d.get("dsc_available_flag", "No")).lower()
+        din = str(d.get("director_din_available", "No")).lower()
+        magistrate_docs = str(d.get("magistrate_application_docs", "No")).lower() # Default to No as requested
+        
+        symbolic_ready = (charge_reg == "yes" and dsc == "yes")
+        if "corporate" in loan_type:
+            symbolic_ready = symbolic_ready and (din == "yes")
+            
+        physical_ready = symbolic_ready and (magistrate_docs == "yes")
+            
+        # Overall possession status for fallback display (using physical for final trigger)
+        possession_status = "Yes" if physical_ready and possession == "yes" else "No"
+        
+        # Determine borrower intent based...
         if response in ["responsive", "positive"] or "promise" in field_outcome:
             borrower_intent = "Cooperative"
         elif response in ["no response", "none"] or "refused" in field_outcome:
@@ -135,37 +175,45 @@ class NBAAgent:
         
         rationale = f"With DPD at {dpd} days, contactability score of {contactability}/100, and CIBIL {cibil}, this action is recommended based on borrower profile and recovery probability."
         
-        return f"""**ACTION_TITLE:** {action}
+        return f"""#### 📜 Action: {action}
+#### Action Reasoning:
+Legal basis Section 13(2) of SARFAESI Act 2002. Given the DPD of {dpd} and current document readiness, this is the most effective legal step to initiate recovery.
 
-**SUCCESS_LIKELIHOOD:** {likelihood}
+**Recovery Likelihood:** {likelihood}
+**Reasoning:** High recovery potential due to secured collateral and legal eligibility.
 
-**RATIONALE:** {rationale}
+**Confidence:** Low
+**Reasoning:** Fallback logic used; detailed behavioral analysis unavailable.
 
-**CONFIDENCE:** Low
-**BORROWER_INTENT:** {borrower_intent}
+**Borrower Behaviour:** {borrower_intent}
+**Reasoning:** Based on response pattern '{response}' and field visit outcome '{field_outcome}'.
 
-**KEY_FACTORS:**
+#### 📋 Key Factors:
 - DPD: {dpd} days — Determines legal action eligibility
 - Contactability: {contactability}/100 — {d.get('response_to_calls')} response pattern
 - CIBIL Score: {cibil} — Indicates repayment capacity
 - Collateral: {d.get('collateral_quality')} ({collateral_liquidity} liquidity) — Recovery potential
 - Broken Promises: {broken_promises} — Borrower reliability indicator
 
-**FACTOR_WEIGHTAGES:**
-- DPD: 25%
-- Contactability: 20%
-- CIBIL Score: 20%
-- Collateral Quality: 20%
-- Broken Promises: 15%
+#### 📜 Documentation Status:
+- Section 13(2) Ready: {sarfaesi_ready.title()} — {'Missing Sanction Letter, Hypothecation Deed, or Charge Particulars' if sarfaesi_ready == 'no' else 'Documentation complete'}
+- Symbolic Possession Ready: {('Yes' if symbolic_ready else 'No')} — {'Missing Charge Registration, DSC' + (', or DIN' if 'corporate' in loan_type else '') if not symbolic_ready else 'Documentation complete'}
+- Physical Possession Ready: {('Yes' if physical_ready else 'No')} — {'Missing Magistrate Application Docs' if not physical_ready else 'Documentation complete'}
+- Auction Ready: {'No' if auction == 'no' else 'Yes'}
 
-**IF_ACTION_FAILS:** Escalate to supervisor for manual review
+#### 📝 Execution Guidance:
+- Point 1: Verify all physical documents against the digital flags
+- Point 2: Ensure the latest valuation report is on file
+- Point 3: Initiate legal notice through empaneled counsel
 
-**COMPLIANCE:**
-- Follow RBI Fair Practice Code for all communications
+**🔄 If Action Fails:** Escalate to supervisor for manual review
+
+#### ⚖️ Compliance:
+- Follows RBI Fair Practice Code for all communications
 - Document all recovery attempts as per regulatory requirements"""
     
     def format_output(self, r: Dict[str, Any]) -> tuple:
-        """Format result for display with structured NPA output
+        """Format result for display with structured NBA output
         
         Returns:
             tuple: (formatted_string, parsed_data) where parsed_data contains factor_weightages
@@ -175,88 +223,31 @@ class NBAAgent:
         # Parse the structured response
         parsed = self._parse_recommendation(recommendation)
         
-        # Build formatted output
+        # If the recommendation already has the "#### Action:" header,
+        # it means it's already in the "pretty" format from the prompt.
+        if "#### Action:" in recommendation:
+            # Add error note if any
+            output = recommendation
+            if r.get("error"):
+                output += f"\n\n⚠️ *{r['error']}*"
+            return output, parsed
+            
+        # Fallback for old raw format if needed
         output_lines = []
-        
-        # Header with action title
-        action_title = parsed.get("action_title", "Recovery Action")
-        output_lines.append(f"#### Action: {action_title}")
-        output_lines.append("")
-        
-        # Success Likelihood and Confidence in compact format
-        likelihood = parsed.get("success_likelihood", "Medium")
-        likelihood_emoji = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(likelihood, "🟡")
-        confidence = parsed.get("confidence", "Medium")
-        confidence_emoji = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(confidence, "🟡")
-        borrower_intent = parsed.get("borrower_intent", "Unknown")
-        intent_emoji = {"Cooperative": "🤝", "Non-responsive": "⚔️", "Evasive": "🏃", "Unknown": "❓"}.get(borrower_intent, "❓")
-        
-        output_lines.append(f"**Recovery Likelihood:** {likelihood_emoji} {likelihood}")
-        output_lines.append(f"**Confidence:** {confidence_emoji} {confidence}")
-        output_lines.append(f"**Borrower:** {intent_emoji} {borrower_intent}")
-        output_lines.append("")
-        
-        # Rationale paragraph (italicized)
-        rationale = parsed.get("rationale", "")
-        if rationale:
-            output_lines.append(f"*{rationale}*")
-            output_lines.append("")
-        
-        # Key Factors section
-        key_factors = parsed.get("key_factors", [])
-        if key_factors:
-            output_lines.append("#### 📋 Key Factors:")
-            output_lines.append("")
-            for factor in key_factors:
-                output_lines.append(f"- {factor}")
-            output_lines.append("")
-        
-        # Action Basis section (new)
-        action_basis = parsed.get("action_basis", "")
-        if action_basis:
-            output_lines.append(f"#### 📜 Action Basis:")
-            output_lines.append("")
-            output_lines.append(f"{action_basis}")
-            output_lines.append("")
-        
-        # Execution Guidance section (new)
-        execution_guidance = parsed.get("execution_guidance", [])
-        if execution_guidance:
-            output_lines.append("#### 📝 Execution Guidance:")
-            output_lines.append("")
-            for point in execution_guidance:
-                output_lines.append(f"- {point}")
-            output_lines.append("")
-        
-        # If Action Fails section
-        fallback = parsed.get("if_action_fails", "")
-        if fallback:
-            output_lines.append(f"**🔄 If Action Fails:** {fallback}")
-            output_lines.append("")
-        
-        # Compliance section
-        compliance = parsed.get("compliance", [])
-        if compliance:
-            output_lines.append("#### ⚖️ Compliance:")
-            output_lines.append("")
-            for item in compliance:
-                output_lines.append(f"- {item}")
-            output_lines.append("")
-        
-        # Add error note if any
-        if r.get("error"):
-            output_lines.append(f"⚠️ *{r['error']}*")
-        
-        return "\n".join(output_lines), parsed
+        # ... (rest of old formatting logic if needed, but we'll prioritize the pretty one)
+        return recommendation, parsed
     
     def _parse_recommendation(self, text: str) -> Dict[str, Any]:
         """Parse structured recommendation text"""
         result = {
             "action_title": "Recovery Action",
             "success_likelihood": "Medium",
+            "recovery_likelihood_reasoning": "",
             "rationale": "",
             "confidence": "Medium",
+            "confidence_reasoning": "",
             "borrower_intent": "Unknown",
+            "borrower_reasoning": "",
             "key_factors": [],
             "factor_weightages": {},
             "action_basis": "",
@@ -270,6 +261,7 @@ class NBAAgent:
         
         lines = text.strip().split("\n")
         current_section = None
+        last_metric = None
         
         for line in lines:
             line = line.strip()
@@ -277,29 +269,54 @@ class NBAAgent:
                 continue
             
             # Parse structured fields
-            if line.startswith("**ACTION_TITLE:**"):
-                result["action_title"] = line.replace("**ACTION_TITLE:**", "").strip()
-            elif line.startswith("**SUCCESS_LIKELIHOOD:**"):
-                result["success_likelihood"] = line.replace("**SUCCESS_LIKELIHOOD:**", "").strip()
+            if line.startswith("#### Action:") or line.startswith("**ACTION_TITLE:**") or line.startswith("#### 📜 Action:"):
+                result["action_title"] = line.replace("#### Action:", "").replace("**ACTION_TITLE:**", "").replace("#### 📜 Action:", "").strip()
+            elif line.startswith("#### 📜 Action Reasoning:") or line.startswith("#### Action Reasoning:") or line.startswith("#### 📜 Action Basis:") or line.startswith("**ACTION_BASIS:**"):
+                current_section = "action_basis"
+            elif line.startswith("**Recovery Likelihood:**") or line.startswith("**SUCCESS_LIKELIHOOD:**"):
+                val = line.replace("**Recovery Likelihood:**", "").replace("**SUCCESS_LIKELIHOOD:**", "").strip()
+                # Strip emojis if present
+                for em in ["🟢", "🟡", "🔴"]: val = val.replace(em, "").strip()
+                result["success_likelihood"] = val
+                last_metric = "likelihood"
+            elif line.startswith("**Recovery Likelihood Reasoning:**"):
+                result["recovery_likelihood_reasoning"] = line.replace("**Recovery Likelihood Reasoning:**", "").strip()
+            elif line.startswith("**Reasoning:**"):
+                val = line.replace("**Reasoning:**", "").strip()
+                if last_metric == "likelihood":
+                    result["recovery_likelihood_reasoning"] = val
+                elif last_metric == "confidence":
+                    result["confidence_reasoning"] = val
+                elif last_metric == "borrower":
+                    result["borrower_reasoning"] = val
             elif line.startswith("**RATIONALE:**"):
-                result["rationale"] = line.replace("**RATIONALE:**", "").strip()
-            elif line.startswith("**CONFIDENCE:**"):
-                result["confidence"] = line.replace("**CONFIDENCE:**", "").strip()
-            elif line.startswith("**BORROWER_INTENT:**"):
-                result["borrower_intent"] = line.replace("**BORROWER_INTENT:**", "").strip()
-            elif line.startswith("**KEY_FACTORS:**"):
+                val = line.replace("**RATIONALE:**", "").strip()
+                result["rationale"] = val.strip("*")
+            elif line.startswith("**Confidence:**") or line.startswith("**CONFIDENCE:**"):
+                val = line.replace("**Confidence:**", "").replace("**CONFIDENCE:**", "").strip()
+                for em in ["🟢", "🟡", "🔴"]: val = val.replace(em, "").strip()
+                result["confidence"] = val
+                last_metric = "confidence"
+            elif line.startswith("**Confidence Reasoning:**"):
+                result["confidence_reasoning"] = line.replace("**Confidence Reasoning:**", "").strip()
+            elif line.startswith("**Borrower:**") or line.startswith("**BORROWER_INTENT:**") or line.startswith("**Borrower Behaviour:**"):
+                val = line.replace("**Borrower:**", "").replace("**BORROWER_INTENT:**", "").replace("**Borrower Behaviour:**", "").strip()
+                for em in ["🤝", "⚔️", "🏃", "❓"]: val = val.replace(em, "").strip()
+                result["borrower_intent"] = val
+                last_metric = "borrower"
+            elif line.startswith("**Borrower Reasoning:**"):
+                result["borrower_reasoning"] = line.replace("**Borrower Reasoning:**", "").strip()
+            elif line.startswith("#### 📋 Key Factors:") or line.startswith("**KEY_FACTORS:**"):
                 current_section = "key_factors"
-            elif line.startswith("**ACTION_BASIS:**"):
-                result["action_basis"] = line.replace("**ACTION_BASIS:**", "").strip()
-                current_section = None
-            elif line.startswith("**EXECUTION_GUIDANCE:**"):
+                last_metric = None
+            elif line.startswith("#### 📝 Execution Guidance:") or line.startswith("**EXECUTION_GUIDANCE:**"):
                 current_section = "execution_guidance"
-            elif line.startswith("**IF_ACTION_FAILS:**"):
-                result["if_action_fails"] = line.replace("**IF_ACTION_FAILS:**", "").strip()
+            elif line.startswith("**🔄 If Action Fails:**") or line.startswith("**IF_ACTION_FAILS:**"):
+                result["if_action_fails"] = line.replace("**🔄 If Action Fails:**", "").replace("**IF_ACTION_FAILS:**", "").strip()
                 current_section = None
             elif line.startswith("**FACTOR_WEIGHTAGES:**"):
                 current_section = "factor_weightages"
-            elif line.startswith("**COMPLIANCE:**"):
+            elif line.startswith("#### ⚖️ Compliance:") or line.startswith("**COMPLIANCE:**"):
                 current_section = "compliance"
             elif line.startswith("- "):
                 # Add to current list section
@@ -316,12 +333,19 @@ class NBAAgent:
                         parts = item.split(":")
                         if len(parts) >= 2:
                             factor_name = parts[0].strip()
+                            # Skip SARFAESI Doc Status from pie chart
+                            if "sarfaesi" in factor_name.lower() or "doc status" in factor_name.lower():
+                                continue
                             percentage_str = parts[1].strip().replace("%", "").strip()
                             try:
                                 percentage = float(percentage_str)
                                 result["factor_weightages"][factor_name] = percentage
                             except ValueError:
                                 pass
+                elif current_section == "action_basis":
+                    result["action_basis"] += " " + item if result["action_basis"] else item
+            elif current_section == "action_basis" and not line.startswith("####"):
+                result["action_basis"] += " " + line if result["action_basis"] else line
         
         # If no factor_weightages provided but we have key_factors, calculate dynamic weightages
         if not result["factor_weightages"] and result["key_factors"]:
@@ -369,6 +393,9 @@ class NBAAgent:
         assigned_factors = []
         
         for name in factor_names:
+            # Skip SARFAESI Doc Status from pie chart weightages
+            if "sarfaesi" in name.lower() or "doc status" in name.lower():
+                continue
             # Find matching priority
             weight = 10  # Default weight
             for key, w in priority_weights.items():

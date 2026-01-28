@@ -59,47 +59,64 @@ This account is already classified as NPA (>90 DPD). You are eligible to invoke 
 - **Medium**: Mixed signals or partial documentation
 - **Low**: Non-responsive + Poor collateral + Multiple broken promises
 
-## OUTPUT FORMAT (Follow EXACTLY):
+## SARFAESI STAGE DOCUMENTATION REQUIREMENTS (FOR ANALYSIS EXPLANATIONS ONLY):
+Use this table to explain documentation readiness in your analysis. Reference specific documents when explaining what stage the account qualifies for:
 
-**ACTION_TITLE:** [Specific Action, e.g., "Issue Section 13(2) Notice" or "Proceed with OTS Negotiation"]
+| Stage | Required Documents | Readiness Check |
+|-------|--------------------------|-----------------|
+| **Section 13(2) Notice** | Sanction Letter, Hypothecation Deed, Charge Particulars | Ready if ALL three = "Yes" |
+| **Objection Pending/Reply** | 13(2) issued + borrower_response_logged | Ready if 13(2) sent + response captured |
+| **Symbolic Possession** | Charge Registration, DSC, DIN (for Corporate Home Loan only) | Ready if Charge Registration + DSC = "Yes". If Corporate Home Loan, DIN must also be "Yes". |
+| **Physical Possession** | Symbolic possession ready + Magistrate Application Docs | Ready if symbolic-ready + Magistrate Application Docs = "Yes" |
+| **Auction Initiation** | valuation_report_flag, reserve_price_fixed_flag | Ready if BOTH = "Yes" |
+| **Asset Sale** | Auction ready + sale_certificate_flag | Ready if auction-ready + sale cert |
+| **Closure/Deficiency** | Asset sale done OR settlement completed | Ready if recovery event completed |
 
-**SUCCESS_LIKELIHOOD:** [High/Medium/Low - Based on criteria above]
+**HOW TO USE IN ANALYSIS:**
+When explaining your recommendation, reference the specific documentation status:
+- ✅ "Account is ready for 13(2) as Sanction Letter, Hypothecation Deed, and Charge Particulars are all complete"
+- ⚠️ "Symbolic possession blocked: Charge Registration is No — must complete charge registration first"
+- ❌ "Cannot proceed to physical possession: Magistrate Application Docs not yet filed"
 
-**RATIONALE:** [One paragraph explaining WHY this action is the best choice for THIS specific borrower based on their profile, payment history, collateral, intent, and recovery probability]
+## OUTPUT FORMAT (Follow Exactly):
 
-**CONFIDENCE:** [High/Medium/Low]
-**BORROWER_INTENT:** [Cooperative/Non-responsive/Evasive/Hostile]
+#### Action: [Specific Action, e.g., "Issue Section 13(2) Notice"]
+#### 📜 Action Reasoning:
+[Legal/Section basis and strategic reasoning for the action]
 
-**KEY_FACTORS:**
-- [Factor 1: Value] — [Why this matters for the recommended action]
-- [Factor 2: Value] — [Why this matters for the recommended action]
-- [Factor 3: Value] — [Why this matters for the recommended action]
-- [Factor 4: Value] — [Why this matters for the recommended action]
-- [Factor 5: Value] — [Why this matters for the recommended action]
+**Recovery Likelihood:** [🟢 High / 🟡 Medium / 🔴 Low]
+**Reasoning:** [One-liner explanation for the likelihood rating]
 
-**FACTOR_WEIGHTAGES:**
-[Provide percentage contribution of each key factor to your recommendation decision. The percentages MUST add up to exactly 100%.]
-- [Factor 1 Name]: [XX]%
-- [Factor 2 Name]: [XX]%
-- [Factor 3 Name]: [XX]%
-- [Factor 4 Name]: [XX]%
-- [Factor 5 Name]: [XX]%
+**Confidence:** [🟢 High / 🟡 Medium / 🔴 Low]
+**Reasoning:** [One-liner explanation for the confidence level]
 
-**ACTION_BASIS:** [Explain the legal/regulatory basis for taking this action. For SARFAESI: specify which section and why applicable. For OTS: specify the discount rationale]
+**Borrower Behaviour:** [🤝 Cooperative / ⚔️ Non-responsive / 🏃 Evasive / ❓ Unknown]
+**Reasoning:** [One-liner explanation for the borrower classification]
 
-**EXECUTION_GUIDANCE:**
-[If Legal Notice/Section 13(2): List the specific POINTS to include in the notice based on this borrower's data]
-[If SARFAESI 13(4): Explain what documentation is needed for possession]
-[If OTS: Suggest settlement percentage and payment terms]
-[If ARC Sale: Explain why sale is preferred over continued recovery]
+#### 📋 Key Factors:
+- [Factor 1: Value] — [Why this matters]
+- [Factor 2: Value] — [Why this matters]
+- [Factor 3: Value] — [Why this matters]
+- [Factor 4: Value] — [Why this matters]
+- [Factor 5: Value] — [Why this matters]
+- [SARFAESI Doc Status: e.g., "13(2) Ready"] — [Doc status explanation]
+
+**Note for Key Factors:** Mention specific SARFAESI doc readiness (e.g., Sanction Letter) based on the recommended stage.
+
+#### 📜 Documentation Status:
+- Section 13(2) Ready: [Yes/No] — [Missing documents if any]
+- Symbolic Possession Ready: [Yes/No] — [Missing documents if any]
+- Physical Possession Ready: [Yes/No] — [Missing documents if any]
+- Auction Ready: [Yes/No] — [Missing documents if any]
+
+#### 📝 Execution Guidance:
 - Point 1: [Specific guidance]
 - Point 2: [Specific guidance]
 - Point 3: [Specific guidance]
-- Point 4: [Specific guidance]
 
-**IF_ACTION_FAILS:** [Alternative action with reasoning]
+**🔄 If Action Fails:** [Alternative action]
 
-**COMPLIANCE:**
-- [Any waiting periods or legal prerequisites]
-- [Documentation requirements per RBI guidelines]
+#### ⚖️ Compliance:
+- [RBI guidelines point]
+- [Readiness gap point]
 """

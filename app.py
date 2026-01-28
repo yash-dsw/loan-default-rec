@@ -8,6 +8,7 @@ import pandas as pd
 import io
 import os
 import base64
+import asyncio
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
@@ -19,6 +20,7 @@ load_dotenv()
 from agents import NBAAgent
 from db import get_loan_by_id
 from schemas import LoanInput
+from pdf_generator import generate_nba_pdf
 
 
 # Initialize agent
@@ -60,6 +62,7 @@ def format_indian_currency(n) -> str:
 async def start():
     """Initialize chat session"""
     cl.user_session.set("loan_data", None)
+    cl.user_session.set("analysis_history", [])
     
     welcome_message = """#### 🏦 NBA Decision System
 
@@ -124,14 +127,8 @@ async def main(message: cl.Message):
         summary = create_loan_summary(loan_input)
         await cl.Message(content=summary).send()
         
-        # Show action button
-        actions = [
-            cl.Action(
-                name="run_analysis",
-                payload={"action": "run"},
-                label="🚀 Run Analysis"
-            )
-        ]
+        # Show action buttons
+        actions = get_actions()
         
         await cl.Message(
             content="Click below or type **'run'** to start analysis.",
@@ -149,27 +146,125 @@ async def on_run_analysis(action: cl.Action):
     loan_data = cl.user_session.get("loan_data")
     if loan_data:
         await run_nba_analysis(loan_data)
+        
+        # After analysis, show actions again (with Download Results if applicable)
+        actions = get_actions()
+        await cl.Message(
+            content="Analysis complete. You can download results or search for another Account ID.",
+            actions=actions
+        ).send()
     else:
         await cl.Message(content="❌ No loan data found. Please enter a valid Account ID first.").send()
 
 
+@cl.action_callback("download_results")
+async def on_download_results(action: cl.Action):
+    """Handle the download results button click (CSV)"""
+    history = cl.user_session.get("analysis_history")
+    
+    if not history:
+        await cl.Message(content="❌ No results to download. Please run analysis on at least one account.").send()
+        return
+    
+    # Create consolidated CSV - Filter out binary/internal data
+    export_list = []
+    for row in history:
+        csv_row = {k: v for k, v in row.items() if k not in ["chart_image", "recommendation_text"]}
+        export_list.append(csv_row)
+        
+    export_df = pd.DataFrame(export_list)
+    csv_buffer = io.StringIO()
+    export_df.to_csv(csv_buffer, index=False)
+    csv_content = csv_buffer.getvalue()
+    
+    # Create file element
+    elements = [
+        cl.File(
+            name=f"analysis_results.csv",
+            content=csv_content.encode(),
+            display="inline"
+        )
+    ]
+    
+    # Send message with the file
+    await cl.Message(
+        content=f"📥 **Download CSV Results ({len(history)} accounts):**",
+        elements=elements
+    ).send()
+
+
+@cl.action_callback("download_pdf")
+async def on_download_pdf(action: cl.Action):
+    """Handle the download PDF button click"""
+    history = cl.user_session.get("analysis_history")
+    
+    if not history:
+        await cl.Message(content="❌ No results to download. Please run analysis on at least one account.").send()
+        return
+    
+    msg = cl.Message(content="📄 Generating PDF report...")
+    await msg.send()
+    
+    try:
+        # Run synchronous PDF generation in a thread
+        pdf_bytes = await cl.make_async(generate_nba_pdf)(history)
+        
+        # Create file element
+        elements = [
+            cl.File(
+                name=f"nba_analysis_report.pdf",
+                content=pdf_bytes,
+                display="inline"
+            )
+        ]
+        
+        # Update message with the file
+        msg.content = f"📥 **Download PDF Report ({len(history)} accounts):**"
+        msg.elements = elements
+        await msg.update()
+        
+    except Exception as e:
+        msg.content = f"❌ Error generating PDF: {str(e)}"
+        await msg.update()
+
+
+def get_actions():
+    """Get the available actions based on session state"""
+    actions = [
+        cl.Action(
+            name="run_analysis",
+            payload={"action": "run"},
+            label="🚀 Run Analysis"
+        )
+    ]
+    
+    # Add Download Results button if there's history
+    history = cl.user_session.get("analysis_history")
+    if history:
+        actions.append(
+            cl.Action(
+                name="download_results",
+                payload={"action": "download_csv"},
+                label="📥 Download CSV"
+            )
+        )
+        actions.append(
+            cl.Action(
+                name="download_pdf",
+                payload={"action": "download_pdf"},
+                label="📥 Download PDF"
+            )
+        )
+    
+    return actions
+
+
 async def run_nba_analysis(loan_input: LoanInput):
-    """Run analysis for a single loan"""
+    """Run analysis for a single loan with real-time streaming output"""
     
     # Get agent context (dict format for the agent)
     account_data = loan_input.to_agent_context()
     account_id = loan_input.loan_id
-    
-    # Create analyzing message
-    analyze_msg = cl.Message(content=f"⏳ Analyzing **{account_id}**...")
-    await analyze_msg.send()
-    
-    # Get agent
-    nba_agent = get_agent()
-    
-    # Get recommendation
-    result = await nba_agent.get_recommendation(account_data)
-    formatted_output, parsed_data = nba_agent.format_output(result)
     
     # Add account header
     account_header = f"""#### 📄 **Account ID:** {account_id} | **Customer ID:** {loan_input.customer_id} 
@@ -178,25 +273,77 @@ async def run_nba_analysis(loan_input: LoanInput):
 
 ---
 """
-    output = account_header + formatted_output
     
-    # Update with result
-    analyze_msg.content = output
-    await analyze_msg.update()
+    # Create the message for streaming
+    msg = cl.Message(content=account_header)
+    await msg.send()
+    
+    # Get agent
+    nba_agent = get_agent()
+    
+    # Stream the recommendation tokens in real-time
+    full_recommendation = ""
+    async for chunk in nba_agent.get_recommendation_stream(account_data):
+        await msg.stream_token(chunk)
+        full_recommendation += chunk
+    
+    # Finalize with structured formatting for the ultimate look
+    result = {
+        "account_id": account_id,
+        "customer_id": loan_input.customer_id,
+        "recommendation": full_recommendation,
+        "success": True,
+        "error": None
+    }
+    
+    formatted_output, parsed_data = nba_agent.format_output(result)
+    
+    # Update the message with the fully formatted version once generation is complete
+    msg.content = account_header + formatted_output
+    await msg.update()
     
     # Generate and send pie chart for factor weightages
-    await create_pie_chart(parsed_data.get("factor_weightages", {}), account_id)
+    # chart_bytes = await create_pie_chart(parsed_data.get("factor_weightages", {}), account_id)
+    chart_bytes = None
     
-    # Create and send export CSV
-    await create_export_csv(loan_input, result)
+    # Create audit record for history
+    full_recommendation = result.get("recommendation", "")
+    parsed_for_export = _parse_recommendation_for_export(full_recommendation)
+    
+    export_row = {
+        "account_id": loan_input.loan_id,
+        "customer_id": loan_input.customer_id,
+        "customer_name": loan_input.customer_full_name,
+        "dpd": loan_input.dpd,
+        "outstanding_amount": loan_input.outstanding_amount,
+        "loan_amount": loan_input.loan_amount,
+        "borrower_type": loan_input.borrower_type,
+        "secured_unsecured": loan_input.secured_unsecured,
+        "collateral_quality": loan_input.collateral_quality,
+        "cibil_score": loan_input.cibil_score,
+        "next_best_action": parsed_for_export.get("action_title", "N/A"),
+        "success_likelihood": parsed_for_export.get("success_likelihood", "N/A"),
+        "confidence": parsed_for_export.get("confidence", "N/A"),
+        "borrower_intent": parsed_for_export.get("borrower_intent", "N/A"),
+        "key_factors": " | ".join(parsed_for_export.get("key_factors", [])[:3]),
+        "fallback_action": parsed_for_export.get("if_action_fails", "N/A"),
+        "status": "Success" if result.get("success") else "Error",
+        "recommendation_text": formatted_output,
+        "chart_image": chart_bytes
+    }
+    
+    # Add to history
+    history = cl.user_session.get("analysis_history")
+    history.append(export_row)
+    cl.user_session.set("analysis_history", history)
 
 
-async def create_pie_chart(factor_weightages: dict, account_id: str):
+async def create_pie_chart(factor_weightages: dict, account_id: str) -> bytes:
     """Create and send a pie chart showing factor contribution distribution"""
     
     if not factor_weightages:
         # No weightages available, skip pie chart
-        return
+        return None
     
     # Prepare data for pie chart
     labels = list(factor_weightages.keys())
@@ -296,55 +443,10 @@ async def create_pie_chart(factor_weightages: dict, account_id: str):
         content="#### 📊 Factor Contribution Analysis",
         elements=elements
     ).send()
+    
+    return buf.getvalue()
 
 
-async def create_export_csv(loan: LoanInput, result: dict):
-    """Create downloadable CSV with results."""
-    
-    # Parse recommendation to extract key fields
-    recommendation = result.get("recommendation", "")
-    parsed = _parse_recommendation_for_export(recommendation)
-    
-    # Build export row
-    export_row = {
-        "account_id": loan.loan_id,
-        "customer_id": loan.customer_id,
-        "dpd": loan.dpd,
-        "outstanding_amount": loan.outstanding_amount,
-        "loan_amount": loan.loan_amount,
-        "borrower_type": loan.borrower_type,
-        "secured_unsecured": loan.secured_unsecured,
-        "collateral_quality": loan.collateral_quality,
-        "cibil_score": loan.cibil_score,
-        "next_best_action": parsed.get("action_title", "N/A"),
-        "success_likelihood": parsed.get("success_likelihood", "N/A"),
-        "confidence": parsed.get("confidence", "N/A"),
-        "borrower_intent": parsed.get("borrower_intent", "N/A"),
-        "key_factors": " | ".join(parsed.get("key_factors", [])[:3]),
-        "fallback_action": parsed.get("if_action_fails", "N/A"),
-        "status": "Success" if result.get("success") else "Error"
-    }
-    
-    # Create DataFrame and CSV
-    export_df = pd.DataFrame([export_row])
-    csv_buffer = io.StringIO()
-    export_df.to_csv(csv_buffer, index=False)
-    csv_content = csv_buffer.getvalue()
-    
-    # Create file element
-    elements = [
-        cl.File(
-            name=f"nba_result_{loan.loan_id}.csv",
-            content=csv_content.encode(),
-            display="inline"
-        )
-    ]
-    
-    # Send message with the file
-    await cl.Message(
-        content="📥 **Download Results:**",
-        elements=elements
-    ).send()
 
 
 def _parse_recommendation_for_export(text: str) -> dict:
@@ -355,7 +457,8 @@ def _parse_recommendation_for_export(text: str) -> dict:
         "confidence": "N/A",
         "borrower_intent": "N/A",
         "key_factors": [],
-        "if_action_fails": "N/A"
+        "if_action_fails": "N/A",
+        "action_basis": ""
     }
     
     if not text:
@@ -363,27 +466,54 @@ def _parse_recommendation_for_export(text: str) -> dict:
     
     lines = text.strip().split("\n")
     current_section = None
+    last_metric = None
     
     for line in lines:
         line = line.strip()
         if not line:
             continue
         
-        if line.startswith("**ACTION_TITLE:**"):
-            result["action_title"] = line.replace("**ACTION_TITLE:**", "").strip()
-        elif line.startswith("**SUCCESS_LIKELIHOOD:**"):
-            result["success_likelihood"] = line.replace("**SUCCESS_LIKELIHOOD:**", "").strip()
-        elif line.startswith("**CONFIDENCE:**"):
-            result["confidence"] = line.replace("**CONFIDENCE:**", "").strip()
-        elif line.startswith("**BORROWER_INTENT:**"):
-            result["borrower_intent"] = line.replace("**BORROWER_INTENT:**", "").strip()
-        elif line.startswith("**KEY_FACTORS:**"):
-            current_section = "key_factors"
-        elif line.startswith("**IF_ACTION_FAILS:**"):
-            result["if_action_fails"] = line.replace("**IF_ACTION_FAILS:**", "").strip()
+        if line.startswith("#### Action:") or line.startswith("**ACTION_TITLE:**") or line.startswith("#### 📜 Action:"):
+            result["action_title"] = line.replace("#### Action:", "").replace("**ACTION_TITLE:**", "").replace("#### 📜 Action:", "").strip()
             current_section = None
-        elif line.startswith("- ") and current_section == "key_factors":
-            result["key_factors"].append(line[2:].strip())
+        elif line.startswith("#### 📜 Action Reasoning:") or line.startswith("#### Action Reasoning:") or line.startswith("#### 📜 Action Basis:") or line.startswith("**ACTION_BASIS:**"):
+            current_section = "action_basis"
+        elif line.startswith("**Recovery Likelihood:**") or line.startswith("**SUCCESS_LIKELIHOOD:**"):
+            val = line.replace("**Recovery Likelihood:**", "").replace("**SUCCESS_LIKELIHOOD:**", "").strip()
+            for em in ["🟢", "🟡", "🔴"]: val = val.replace(em, "").strip()
+            result["success_likelihood"] = val
+            current_section = None
+            last_metric = "likelihood"
+        elif line.startswith("**Reasoning:**"):
+            # We don't have separate export fields for reasonings yet, 
+            # but we can track them if needed. For now, just reset section.
+            current_section = None
+        elif line.startswith("**Confidence:**") or line.startswith("**CONFIDENCE:**"):
+            val = line.replace("**Confidence:**", "").replace("**CONFIDENCE:**", "").strip()
+            for em in ["🟢", "🟡", "🔴"]: val = val.replace(em, "").strip()
+            result["confidence"] = val
+            current_section = None
+            last_metric = "confidence"
+        elif line.startswith("**Borrower Behaviour:**") or line.startswith("**Borrower:**") or line.startswith("**BORROWER_INTENT:**"):
+            val = line.replace("**Borrower Behaviour:**", "").replace("**Borrower:**", "").replace("**BORROWER_INTENT:**", "").strip()
+            for em in ["🤝", "⚔️", "🏃", "❓"]: val = val.replace(em, "").strip()
+            result["borrower_intent"] = val
+            current_section = None
+            last_metric = "borrower"
+        elif line.startswith("#### 📋 Key Factors:") or line.startswith("**KEY_FACTORS:**"):
+            current_section = "key_factors"
+            last_metric = None
+        elif line.startswith("**🔄 If Action Fails:**") or line.startswith("**IF_ACTION_FAILS:**"):
+            result["if_action_fails"] = line.replace("**🔄 If Action Fails:**", "").replace("**IF_ACTION_FAILS:**", "").strip()
+            current_section = None
+        elif line.startswith("- "):
+            if current_section == "key_factors":
+                result["key_factors"].append(line[2:].strip())
+            elif current_section == "action_basis":
+                item = line[2:].strip()
+                result["action_basis"] += " " + item if result["action_basis"] else item
+        elif current_section == "action_basis" and not line.startswith("####"):
+            result["action_basis"] += " " + line if result["action_basis"] else line
     
     return result
 
