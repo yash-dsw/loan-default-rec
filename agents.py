@@ -37,14 +37,15 @@ class NBAAgent:
     
     def format_borrower_data(self, d: Dict[str, Any]) -> str:
         """Format account data compactly"""
-        return f"""**Account:** {d.get('account_id')} | **Customer:** {d.get('customer_id')}
-**Loan:** {d.get('loan_type')} ({d.get('secured_flag')}) — ₹{d.get('outstanding_amount', 0):,.0f} of ₹{d.get('loan_amount', 0):,.0f} | EMI: ₹{d.get('emi_amount', 0):,.0f}
-**Status:** {d.get('delinquency_stage')} | DPD: {d.get('dpd')} | Max DPD: {d.get('max_dpd_ever')} | Times Delinquent: {d.get('times_delinquent')}
-**Customer:** {d.get('customer_type')} | {d.get('geography')} | Income: {d.get('income_band')} | Credit: {d.get('credit_score_band')}
+        return f"""**Account:** {d.get('account_id')} | **Customer:** {d.get('customer_id')} ({d.get('customer_full_name', 'N/A')})
+**Loan:** {d.get('loan_type')} ({d.get('secured_flag')}) — ₹{d.get('outstanding_amount', 0):,.0f} of ₹{d.get('loan_amount', 0):,.0f} | EMI: ₹{d.get('emi_amount', 0):,.0f} | Rate: {d.get('interest_rate')}%
+**Status:** DPD: {d.get('dpd')} | CIBIL: {d.get('cibil_score')} | Tenure: {d.get('tenure_months')} months | Vintage: {d.get('loan_vintage_months')} months
+**Customer:** {d.get('customer_type')} | {d.get('geography')} | Income: {d.get('annual_income_total')}
 **Contact:** Score {d.get('contactability_score')}/100 | Response: {d.get('response_to_calls')} | Visit: {d.get('field_visit_outcome')} | Broken Promises: {d.get('broken_promises_count')}
 **Last Action:** {d.get('last_action_taken')} ({d.get('days_since_last_action')} days ago)
-**Legal:** Notice: {d.get('legal_notice_sent')} | SARFAESI: {d.get('sarfaesi_stage')} | Restructure: {d.get('restructure_offered')} | OTS: {d.get('ots_offered')}
-**Recovery:** 30d: ₹{d.get('recovery_amount_30d', 0):,.0f} | 90d: ₹{d.get('recovery_amount_90d', 0):,.0f}"""
+**Collateral:** {d.get('collateral_type')} ({d.get('collateral_quality')}) | Liquidity: {d.get('collateral_liquidity')} | Cost: ₹{d.get('cost_of_recovery', 0):,.0f} | Expected: ₹{d.get('expected_recovery', 0):,.0f}
+**Legal:** Notice: {d.get('legal_notice_sent')} | Possession: {d.get('possession')} | Auction: {d.get('auction')} | Restructure: {d.get('restructure_offered')}/{d.get('restructure_accepted')} | OTS: {d.get('ots_offered')}/{d.get('ots_accepted')}
+**SARFAESI Ready:** {d.get('sarfaesi_ready_flag')} | Charge Registered: {d.get('charge_registered_flag')} | DSC: {d.get('dsc_available_flag')}"""
     
     async def get_recommendation(self, account_data: Dict[str, Any]) -> Dict[str, Any]:
         """Get NBA recommendation for a single account"""
@@ -133,8 +134,12 @@ class NBAAgent:
 - Follow RBI Fair Practice Code for all communications
 - Document all recovery attempts as per regulatory requirements"""
     
-    def format_output(self, r: Dict[str, Any]) -> str:
-        """Format result for display with structured NPA output"""
+    def format_output(self, r: Dict[str, Any]) -> tuple:
+        """Format result for display with structured NPA output
+        
+        Returns:
+            tuple: (formatted_string, parsed_data) where parsed_data contains factor_weightages
+        """
         recommendation = r.get("recommendation", "")
         
         # Parse the structured response
@@ -216,7 +221,7 @@ class NBAAgent:
         if r.get("error"):
             output_lines.append(f"⚠️ *{r['error']}*")
         
-        return "\n".join(output_lines)
+        return "\n".join(output_lines), parsed
     
     def _parse_recommendation(self, text: str) -> Dict[str, Any]:
         """Parse structured recommendation text"""
@@ -227,6 +232,7 @@ class NBAAgent:
             "confidence": "Medium",
             "borrower_intent": "Unknown",
             "key_factors": [],
+            "factor_weightages": {},
             "action_basis": "",
             "execution_guidance": [],
             "if_action_fails": "",
@@ -265,6 +271,8 @@ class NBAAgent:
             elif line.startswith("**IF_ACTION_FAILS:**"):
                 result["if_action_fails"] = line.replace("**IF_ACTION_FAILS:**", "").strip()
                 current_section = None
+            elif line.startswith("**FACTOR_WEIGHTAGES:**"):
+                current_section = "factor_weightages"
             elif line.startswith("**COMPLIANCE:**"):
                 current_section = "compliance"
             elif line.startswith("- "):
@@ -276,5 +284,17 @@ class NBAAgent:
                     result["execution_guidance"].append(item)
                 elif current_section == "compliance":
                     result["compliance"].append(item)
+                elif current_section == "factor_weightages":
+                    # Parse "Factor Name: XX%" format
+                    if ":" in item and "%" in item:
+                        parts = item.split(":")
+                        if len(parts) >= 2:
+                            factor_name = parts[0].strip()
+                            percentage_str = parts[1].strip().replace("%", "").strip()
+                            try:
+                                percentage = float(percentage_str)
+                                result["factor_weightages"][factor_name] = percentage
+                            except ValueError:
+                                pass
         
         return result

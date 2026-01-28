@@ -5,14 +5,20 @@ Fast, Actionable Recommendations for Indian Home Loan Recovery
 
 import chainlit as cl
 import pandas as pd
+import io
 import os
+import base64
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
 from agents import NBAAgent
-from validators import validate_csv_input, dataframe_to_records
+from db import get_loan_by_id
+from schemas import LoanInput
 
 
 # Initialize agent
@@ -30,138 +36,368 @@ def get_agent() -> NBAAgent:
 @cl.on_chat_start
 async def start():
     """Initialize chat session"""
+    cl.user_session.set("loan_data", None)
+    
     welcome_message = """#### 🏦 NBA Decision System
 
 **Next Best Action Recommender** for Home Loan Recovery
 
-Upload a CSV file (1-5 accounts) to get:
-- 🎯 Single best action recommendation
-- 📊 Key factors influencing decision
-- ⚖️ RBI/SARFAESI compliance check
+#### Quick Start:
+1. 🔍 **Search** for a loan by entering the **Account ID**
+2. 📊 **Review** the loan summary
+3. 🚀 **Run** NBA analysis
 
 ---
-📎 **Upload your CSV to begin.**
+**🔍 Please enter the Account ID to search for a loan record.**
 """
     await cl.Message(content=welcome_message).send()
 
 
 @cl.on_message
 async def main(message: cl.Message):
-    """Handle file uploads"""
+    """Handle incoming messages"""
     
+    # Check for help command
     if message.content.lower().strip() == "help":
         await send_help()
         return
     
-    if not message.elements:
-        await cl.Message(content="📎 Please upload a CSV file with loan data.").send()
+    # Check if this is a command to run analysis
+    if message.content.strip().lower() in ["run", "analyze", "run analysis", "start", "run nba analysis"]:
+        loan_data = cl.user_session.get("loan_data")
+        if loan_data:
+            await run_nba_analysis(loan_data)
+        else:
+            await cl.Message(content="❌ No loan data found. Please enter a valid Account ID first.").send()
         return
     
-    csv_files = [el for el in message.elements if el.name.endswith('.csv')]
+    # Otherwise, treat input as account_id
+    account_id = message.content.strip()
     
-    if not csv_files:
-        await cl.Message(content="❌ No CSV file found. Please upload a .csv file.").send()
+    if not account_id:
+        await cl.Message(content="📎 Please enter an Account ID to search.").send()
         return
     
-    csv_file = csv_files[0]
+    # Show search status
+    msg = cl.Message(content=f"🔍 Searching for Account ID: **{account_id}**...")
+    await msg.send()
     
     try:
-        # Processing message
-        processing_msg = cl.Message(content=f"📂 Reading **{csv_file.name}**...")
-        await processing_msg.send()
+        loan_input = get_loan_by_id(account_id)
         
-        # Read CSV
-        if hasattr(csv_file, 'path') and csv_file.path:
-            df = pd.read_csv(csv_file.path)
-        elif hasattr(csv_file, 'content') and csv_file.content:
-            import io
-            if isinstance(csv_file.content, bytes):
-                df = pd.read_csv(io.BytesIO(csv_file.content))
-            else:
-                df = pd.read_csv(io.StringIO(csv_file.content))
-        else:
-            processing_msg.content = "❌ Could not read file."
-            await processing_msg.update()
+        if not loan_input:
+            msg.content = f"❌ No record found for Account ID: **{account_id}**. Please try another one."
+            await msg.update()
             return
         
-        # Validate
-        validation = validate_csv_input(df, max_rows=5)
+        # Store loan data
+        cl.user_session.set("loan_data", loan_input)
         
-        if not validation.is_valid:
-            processing_msg.content = f"❌ **Validation Failed**\n\n{validation.get_summary()}"
-            await processing_msg.update()
-            return
+        # Show success
+        msg.content = f"✅ Record found for **{account_id}**."
+        await msg.update()
         
-        records = dataframe_to_records(validation.validated_data)
+        # Show loan summary
+        summary = create_loan_summary(loan_input)
+        await cl.Message(content=summary).send()
         
-        # Update with summary table
-        summary = create_summary_table(validation.validated_data)
-        processing_msg.content = summary
-        await processing_msg.update()
+        # Show action button
+        actions = [
+            cl.Action(
+                name="run_analysis",
+                payload={"action": "run"},
+                label="🚀 Run NBA Analysis"
+            )
+        ]
         
-        # Get agent
-        nba_agent = get_agent()
+        await cl.Message(
+            content="Click below or type **'run'** to start analysis.",
+            actions=actions
+        ).send()
         
-        # Process each account
-        for i, record in enumerate(records, 1):
-            account_id = record.get('account_id', f'Account {i}')
-            
-            # Create analyzing message
-            analyze_msg = cl.Message(content=f"⏳ Analyzing **{account_id}**...")
-            await analyze_msg.send()
-            
-            # Get recommendation
-            result = await nba_agent.get_recommendation(record)
-            formatted_output = nba_agent.format_output(result)
-            
-            # Add account header
-            account_header = f"""#### 📄 {account_id} | {record.get('customer_id', 'Unknown')}
-**Stage:** NPA · **DPD:** {record.get('dpd', 0)} · **Outstanding:** ₹{record.get('outstanding_amount', 0):,.0f}
+    except Exception as e:
+        msg.content = f"❌ Error: {str(e)}"
+        await msg.update()
+
+
+@cl.action_callback("run_analysis")
+async def on_run_analysis(action: cl.Action):
+    """Handle the run analysis button click"""
+    loan_data = cl.user_session.get("loan_data")
+    if loan_data:
+        await run_nba_analysis(loan_data)
+    else:
+        await cl.Message(content="❌ No loan data found. Please enter a valid Account ID first.").send()
+
+
+async def run_nba_analysis(loan_input: LoanInput):
+    """Run NBA analysis for a single loan"""
+    
+    # Get agent context (dict format for the agent)
+    account_data = loan_input.to_agent_context()
+    account_id = loan_input.loan_id
+    
+    # Create analyzing message
+    analyze_msg = cl.Message(content=f"⏳ Analyzing **{account_id}**...")
+    await analyze_msg.send()
+    
+    # Get agent
+    nba_agent = get_agent()
+    
+    # Get recommendation
+    result = await nba_agent.get_recommendation(account_data)
+    formatted_output, parsed_data = nba_agent.format_output(result)
+    
+    # Add account header
+    account_header = f"""#### 📄 {account_id} | {loan_input.customer_id}
+**Stage:** NPA · **DPD:** {loan_input.dpd} · **Outstanding:** ₹{loan_input.outstanding_amount:,.0f}
 
 ---
 """
-            output = account_header + formatted_output
-            
-            # Update with result
-            analyze_msg.content = output
-            await analyze_msg.update()
-        
-        # Final message
-        await cl.Message(content=f"✅ Done — {len(records)} account(s) processed").send()
-        
-    except Exception as e:
-        await cl.Message(content=f"❌ Error: {str(e)}").send()
+    output = account_header + formatted_output
+    
+    # Update with result
+    analyze_msg.content = output
+    await analyze_msg.update()
+    
+    # Generate and send pie chart for factor weightages
+    await create_pie_chart(parsed_data.get("factor_weightages", {}), account_id)
+    
+    # Create and send export CSV
+    await create_export_csv(loan_input, result)
 
 
-def create_summary_table(df: pd.DataFrame) -> str:
-    """Create data summary as table"""
-    lines = [
-        "#### 📊 Accounts to Analyze",
-        "",
-        "| Account | Customer | Stage | DPD | Outstanding |",
-        "|:--------|:---------|:------|----:|------------:|"
+async def create_pie_chart(factor_weightages: dict, account_id: str):
+    """Create and send a pie chart showing factor contribution distribution"""
+    
+    if not factor_weightages:
+        # No weightages available, skip pie chart
+        return
+    
+    # Prepare data for pie chart
+    labels = list(factor_weightages.keys())
+    sizes = list(factor_weightages.values())
+    
+    # Define a modern, vibrant color palette
+    colors = [
+        '#6366F1',  # Indigo
+        '#8B5CF6',  # Violet
+        '#EC4899',  # Pink
+        '#F97316',  # Orange
+        '#14B8A6',  # Teal
+        '#22C55E',  # Green
+        '#EAB308',  # Yellow
+        '#3B82F6',  # Blue
     ]
     
-    for _, row in df.iterrows():
-        outstanding = row.get('outstanding_amount', 0)
-        lines.append(f"| {row.get('account_id', 'N/A')} | {row.get('customer_id', 'N/A')} | {row.get('delinquency_stage', 'N/A')} | {row.get('dpd', 0)} | ₹{outstanding:,.0f} |")
+    # Use only needed colors
+    pie_colors = colors[:len(labels)]
     
-    lines.append("")
-    lines.append("---")
-    return "\n".join(lines)
+    # Create figure with dark background for modern look
+    fig, ax = plt.subplots(figsize=(8, 6), facecolor='#1a1a2e')
+    ax.set_facecolor('#1a1a2e')
+    
+    # Create pie chart with explosion effect for emphasis
+    explode = [0.02] * len(labels)  # Slight separation for all slices
+    
+    wedges, texts, autotexts = ax.pie(
+        sizes,
+        labels=labels,
+        colors=pie_colors,
+        autopct='%1.1f%%',
+        startangle=90,
+        explode=explode,
+        shadow=False,
+        wedgeprops=dict(width=0.7, edgecolor='#1a1a2e', linewidth=2),
+        textprops={'fontsize': 10, 'color': 'white', 'fontweight': 'bold'},
+        pctdistance=0.75
+    )
+    
+    # Style autopct labels
+    for autotext in autotexts:
+        autotext.set_color('#ffffff')
+        autotext.set_fontsize(9)
+        autotext.set_fontweight('bold')
+    
+    # Style labels
+    for text in texts:
+        text.set_fontsize(9)
+        text.set_color('#e2e8f0')
+    
+    # Add title
+    ax.set_title(
+        'Factor Contribution Distribution',
+        fontsize=14,
+        fontweight='bold',
+        color='white',
+        pad=20
+    )
+    
+    # Add a center circle for donut chart effect
+    centre_circle = plt.Circle((0, 0), 0.4, fc='#1a1a2e')
+    ax.add_patch(centre_circle)
+    
+    # Add center text
+    ax.text(0, 0, 'Factors', ha='center', va='center', fontsize=12, 
+            color='white', fontweight='bold')
+    
+    # Equal aspect ratio ensures pie is circular
+    ax.axis('equal')
+    
+    # Tight layout
+    plt.tight_layout()
+    
+    # Save to bytes buffer
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=150, facecolor='#1a1a2e', 
+                edgecolor='none', bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+    
+    # Convert to base64 for inline display
+    img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    
+    # Create image element
+    elements = [
+        cl.Image(
+            name="factor_distribution",
+            content=buf.getvalue(),
+            display="inline",
+            size="large"
+        )
+    ]
+    
+    # Send message with pie chart
+    await cl.Message(
+        content="#### 📊 Factor Contribution Analysis",
+        elements=elements
+    ).send()
+
+
+async def create_export_csv(loan: LoanInput, result: dict):
+    """Create downloadable CSV with results."""
+    
+    # Parse recommendation to extract key fields
+    recommendation = result.get("recommendation", "")
+    parsed = _parse_recommendation_for_export(recommendation)
+    
+    # Build export row
+    export_row = {
+        "account_id": loan.loan_id,
+        "customer_id": loan.customer_id,
+        "dpd": loan.dpd,
+        "outstanding_amount": loan.outstanding_amount,
+        "loan_amount": loan.loan_amount,
+        "borrower_type": loan.borrower_type,
+        "secured_unsecured": loan.secured_unsecured,
+        "collateral_quality": loan.collateral_quality,
+        "cibil_score": loan.cibil_score,
+        "next_best_action": parsed.get("action_title", "N/A"),
+        "success_likelihood": parsed.get("success_likelihood", "N/A"),
+        "confidence": parsed.get("confidence", "N/A"),
+        "borrower_intent": parsed.get("borrower_intent", "N/A"),
+        "key_factors": " | ".join(parsed.get("key_factors", [])[:3]),
+        "fallback_action": parsed.get("if_action_fails", "N/A"),
+        "status": "Success" if result.get("success") else "Error"
+    }
+    
+    # Create DataFrame and CSV
+    export_df = pd.DataFrame([export_row])
+    csv_buffer = io.StringIO()
+    export_df.to_csv(csv_buffer, index=False)
+    csv_content = csv_buffer.getvalue()
+    
+    # Create file element
+    elements = [
+        cl.File(
+            name=f"nba_result_{loan.loan_id}.csv",
+            content=csv_content.encode(),
+            display="inline"
+        )
+    ]
+    
+    # Send message with the file
+    await cl.Message(
+        content="📥 **Download Results:**",
+        elements=elements
+    ).send()
+
+
+def _parse_recommendation_for_export(text: str) -> dict:
+    """Parse structured recommendation text for CSV export."""
+    result = {
+        "action_title": "N/A",
+        "success_likelihood": "N/A",
+        "confidence": "N/A",
+        "borrower_intent": "N/A",
+        "key_factors": [],
+        "if_action_fails": "N/A"
+    }
+    
+    if not text:
+        return result
+    
+    lines = text.strip().split("\n")
+    current_section = None
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        if line.startswith("**ACTION_TITLE:**"):
+            result["action_title"] = line.replace("**ACTION_TITLE:**", "").strip()
+        elif line.startswith("**SUCCESS_LIKELIHOOD:**"):
+            result["success_likelihood"] = line.replace("**SUCCESS_LIKELIHOOD:**", "").strip()
+        elif line.startswith("**CONFIDENCE:**"):
+            result["confidence"] = line.replace("**CONFIDENCE:**", "").strip()
+        elif line.startswith("**BORROWER_INTENT:**"):
+            result["borrower_intent"] = line.replace("**BORROWER_INTENT:**", "").strip()
+        elif line.startswith("**KEY_FACTORS:**"):
+            current_section = "key_factors"
+        elif line.startswith("**IF_ACTION_FAILS:**"):
+            result["if_action_fails"] = line.replace("**IF_ACTION_FAILS:**", "").strip()
+            current_section = None
+        elif line.startswith("- ") and current_section == "key_factors":
+            result["key_factors"].append(line[2:].strip())
+    
+    return result
+
+
+def create_loan_summary(loan: LoanInput) -> str:
+    """Create loan summary table"""
+    return f"""#### 📋 Loan Summary
+
+| Attribute | Value |
+|-----------|-------|
+| Account ID | {loan.loan_id} |
+| Customer ID | {loan.customer_id} |
+| Customer Name | {loan.customer_full_name} |
+| DPD | {loan.dpd} days |
+| Outstanding | ₹{loan.outstanding_amount:,.2f} |
+| Loan Amount | ₹{loan.loan_amount:,.2f} |
+| EMI | ₹{loan.emi_amount:,.2f} |
+| Interest Rate | {loan.interest_rate}% |
+| Secured | {loan.secured_unsecured} |
+| Collateral | {loan.collateral_type} ({loan.collateral_quality}) |
+| Collateral Liquidity | {loan.collateral_liquidity} |
+| Customer Type | {loan.borrower_type} |
+| Location | {loan.geographic_location} |
+| Annual Income | {loan.annual_income_total} |
+| CIBIL Score | {loan.cibil_score} |
+| SARFAESI Ready | {loan.sarfaesi_ready_flag} |
+
+---"""
 
 
 async def send_help():
     """Send help message"""
-    await cl.Message(content="""#### 📋 CSV Format
+    await cl.Message(content="""#### 📋 How to Use
 
-**Required columns:** `account_id`, `customer_id`, `loan_type`, `dpd`, `delinquency_stage`, `outstanding_amount`
+1. **Enter Account ID** — Type the loan account ID to search
+2. **Review Summary** — Check the loan details displayed
+3. **Run Analysis** — Click the button or type 'run' to get NBA recommendation
 
-**Delinquency Stages:**
-• SMA-0: 1-30 DPD (Soft reminders)
-• SMA-1: 31-60 DPD (Field visits)
-• SMA-2: 61-90 DPD (Formal notices)
-• NPA: >90 DPD (Legal action)
-
-📎 Upload your CSV to get started!
+**Example Account IDs:** Check your database for existing records.
 """).send()
+

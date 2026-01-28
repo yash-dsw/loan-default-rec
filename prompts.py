@@ -41,6 +41,14 @@ This account is already classified as NPA (>90 DPD). You are eligible to invoke 
 - [Factor 4: Value] — [Why this matters for the recommended action]
 - [Factor 5: Value] — [Why this matters for the recommended action]
 
+**FACTOR_WEIGHTAGES:**
+[Provide percentage contribution of each key factor to your recommendation decision. The percentages MUST add up to exactly 100%.]
+- [Factor 1 Name]: [XX]%
+- [Factor 2 Name]: [XX]%
+- [Factor 3 Name]: [XX]%
+- [Factor 4 Name]: [XX]%
+- [Factor 5 Name]: [XX]%
+
 **ACTION_BASIS:** [Explain the legal/regulatory basis for taking this action. For SARFAESI: specify which section and why applicable. For OTS: specify the discount rationale]
 
 **EXECUTION_GUIDANCE:**
