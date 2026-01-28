@@ -127,8 +127,9 @@ def import_csv(conn, csv_path: str):
     df = pd.read_csv(csv_path)
     print(f"[INFO] Read {len(df)} rows from {csv_path}")
     
-    # Map CSV columns to database columns (handle column name differences)
+    # Map CSV columns to database columns (handle column name differences and typos)
     column_mapping = {
+        # Step prefixed columns from old format
         'step_call_done': 'call_done',
         'step_field_visit_done': 'field_visit_done',
         'step_restructure_initiated': 'restructure_offered',
@@ -137,6 +138,9 @@ def import_csv(conn, csv_path: str):
         'step_auction': 'auction',
         'step_ots_offered': 'ots_offered',
         'step_ots_accepted': 'ots_accepted',
+        # Common typos in CSV headers
+        'customer_full_Nome': 'customer_full_name',
+        'authorized_sigNotory_pan': 'authorized_signatory_pan',
     }
     
     # Rename columns if they exist

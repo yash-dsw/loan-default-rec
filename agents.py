@@ -94,23 +94,46 @@ class NBAAgent:
             }
     
     def _fallback(self, d: Dict[str, Any]) -> str:
-        """Fallback recommendation in structured format"""
+        """Fallback recommendation in structured format based on new data schema"""
         dpd = d.get("dpd", 0)
-        response = d.get("response_to_calls", "None")
-        field_outcome = d.get("field_visit_outcome", "Not Done")
+        response = str(d.get("response_to_calls", "None")).lower()
+        field_outcome = str(d.get("field_visit_outcome", "Not Done")).lower()
+        contactability = d.get("contactability_score", 50)
+        broken_promises = d.get("broken_promises_count", 0)
+        cibil = d.get("cibil_score", 600)
+        collateral_liquidity = str(d.get("collateral_liquidity", "Medium")).lower()
+        sarfaesi_ready = str(d.get("sarfaesi_ready_flag", "No")).lower()
+        legal_notice = str(d.get("legal_notice_sent", "No")).lower()
+        possession = str(d.get("possession", "No")).lower()
         
-        # Determine borrower intent
-        if response == "Positive" or field_outcome == "Promise to Pay":
+        # Determine borrower intent based on new data values
+        if response in ["responsive", "positive"] or "promise" in field_outcome:
             borrower_intent = "Cooperative"
-        elif response == "None" or field_outcome == "Not Done":
+        elif response in ["no response", "none"] or "refused" in field_outcome:
             borrower_intent = "Non-responsive"
+        elif response in ["avoiding", "irregular"]:
+            borrower_intent = "Evasive"
         else:
-            borrower_intent = "Hostile"
+            borrower_intent = "Unknown"
         
-        # Determine action based on NPA stage
-        action = "One-Time Settlement (OTS)"
-        likelihood = "Medium"
-        rationale = f"With DPD at {dpd} days in NPA stage, a negotiated settlement approach is recommended as the fallback strategy due to API unavailability."
+        # Determine action and likelihood based on multiple factors
+        if dpd >= 270 and sarfaesi_ready == "yes" and possession == "yes":
+            action = "Initiate Auction Proceedings"
+            likelihood = "High" if collateral_liquidity == "high" else "Medium"
+        elif dpd >= 180 and sarfaesi_ready == "yes" and legal_notice == "yes":
+            action = "Proceed with SARFAESI 13(4) Possession"
+            likelihood = "Medium" if contactability < 30 else "High"
+        elif dpd >= 120 and sarfaesi_ready == "yes":
+            action = "Issue Section 13(2) Notice"
+            likelihood = "High" if broken_promises < 3 else "Medium"
+        elif contactability >= 40 and borrower_intent == "Cooperative":
+            action = "Negotiate One-Time Settlement (OTS)"
+            likelihood = "High" if cibil >= 600 else "Medium"
+        else:
+            action = "Intensify Collection Efforts with Field Visit"
+            likelihood = "Low" if broken_promises >= 4 else "Medium"
+        
+        rationale = f"With DPD at {dpd} days, contactability score of {contactability}/100, and CIBIL {cibil}, this action is recommended based on borrower profile and recovery probability."
         
         return f"""**ACTION_TITLE:** {action}
 
@@ -122,11 +145,18 @@ class NBAAgent:
 **BORROWER_INTENT:** {borrower_intent}
 
 **KEY_FACTORS:**
-- DPD: {dpd} days — Account is in NPA stage
-- Stage: {d.get('delinquency_stage', 'NPA')} — Legal action is eligible
-- Response: {response} — Based on call response history
-- Field Visit: {field_outcome} — Last field visit outcome
-- Fallback recommendation — API error occurred
+- DPD: {dpd} days — Determines legal action eligibility
+- Contactability: {contactability}/100 — {d.get('response_to_calls')} response pattern
+- CIBIL Score: {cibil} — Indicates repayment capacity
+- Collateral: {d.get('collateral_quality')} ({collateral_liquidity} liquidity) — Recovery potential
+- Broken Promises: {broken_promises} — Borrower reliability indicator
+
+**FACTOR_WEIGHTAGES:**
+- DPD: 25%
+- Contactability: 20%
+- CIBIL Score: 20%
+- Collateral Quality: 20%
+- Broken Promises: 15%
 
 **IF_ACTION_FAILS:** Escalate to supervisor for manual review
 
