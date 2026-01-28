@@ -33,6 +33,29 @@ def get_agent() -> NBAAgent:
     return agent
 
 
+def format_indian_currency(n) -> str:
+    """Format number with Indian numbering system (e.g. 10,00,000)"""
+    try:
+        n = float(n)
+        s = f"{n:.0f}"
+        if len(s) <= 3:
+            return s
+        
+        last_three = s[-3:]
+        remaining = s[:-3]
+        
+        formatted_remaining = ""
+        while len(remaining) > 2:
+            formatted_remaining = "," + remaining[-2:] + formatted_remaining
+            remaining = remaining[:-2]
+        
+        formatted_remaining = remaining + formatted_remaining
+        
+        return formatted_remaining + "," + last_three
+    except:
+        return str(n)
+
+
 @cl.on_chat_start
 async def start():
     """Initialize chat session"""
@@ -43,12 +66,12 @@ async def start():
 **Next Best Action Recommender** for Home Loan Recovery
 
 #### Quick Start:
-1. 🔍 **Search** for a loan by entering the **Account ID**
+1. 🔍 **Search** for a loan by **Account ID**, **Customer ID**, or **Customer Name**
 2. 📊 **Review** the loan summary
 3. 🚀 **Run** NBA analysis
 
 ---
-**🔍 Please enter the Account ID to search for a loan record.**
+**🔍 Enter Account ID, Customer ID, or Customer Name to search.**
 """
     await cl.Message(content=welcome_message).send()
 
@@ -71,22 +94,22 @@ async def main(message: cl.Message):
             await cl.Message(content="❌ No loan data found. Please enter a valid Account ID first.").send()
         return
     
-    # Otherwise, treat input as account_id
-    account_id = message.content.strip()
+    # Otherwise, treat input as search term (account_id, customer_id, or name)
+    search_term = message.content.strip()
     
-    if not account_id:
-        await cl.Message(content="📎 Please enter an Account ID to search.").send()
+    if not search_term:
+        await cl.Message(content="📎 Please enter an Account ID, Customer ID, or Name to search.").send()
         return
     
     # Show search status
-    msg = cl.Message(content=f"🔍 Searching for Account ID: **{account_id}**...")
+    msg = cl.Message(content=f"🔍 Searching for: **{search_term}**...")
     await msg.send()
     
     try:
-        loan_input = get_loan_by_id(account_id)
+        loan_input = get_loan_by_id(search_term)
         
         if not loan_input:
-            msg.content = f"❌ No record found for Account ID: **{account_id}**. Please try another one."
+            msg.content = f"❌ No record found for: **{search_term}**. Try Account ID, Customer ID, or Name."
             await msg.update()
             return
         
@@ -94,7 +117,7 @@ async def main(message: cl.Message):
         cl.user_session.set("loan_data", loan_input)
         
         # Show success
-        msg.content = f"✅ Record found for **{account_id}**."
+        msg.content = f"✅ Record found: **{loan_input.customer_full_name}** ({loan_input.loan_id})"
         await msg.update()
         
         # Show loan summary
@@ -106,7 +129,7 @@ async def main(message: cl.Message):
             cl.Action(
                 name="run_analysis",
                 payload={"action": "run"},
-                label="🚀 Run NBA Analysis"
+                label="🚀 Run Analysis"
             )
         ]
         
@@ -131,7 +154,7 @@ async def on_run_analysis(action: cl.Action):
 
 
 async def run_nba_analysis(loan_input: LoanInput):
-    """Run NBA analysis for a single loan"""
+    """Run analysis for a single loan"""
     
     # Get agent context (dict format for the agent)
     account_data = loan_input.to_agent_context()
@@ -149,8 +172,9 @@ async def run_nba_analysis(loan_input: LoanInput):
     formatted_output, parsed_data = nba_agent.format_output(result)
     
     # Add account header
-    account_header = f"""#### 📄 {account_id} | {loan_input.customer_id}
-**Stage:** NPA · **DPD:** {loan_input.dpd} · **Outstanding:** ₹{loan_input.outstanding_amount:,.0f}
+    account_header = f"""#### 📄 **Account ID:** {account_id} | **Customer ID:** {loan_input.customer_id} 
+**Customer Name:** {loan_input.customer_full_name}
+**DPD:** {loan_input.dpd} · **Outstanding:** ₹{format_indian_currency(loan_input.outstanding_amount)}
 
 ---
 """
@@ -368,15 +392,15 @@ def create_loan_summary(loan: LoanInput) -> str:
     """Create loan summary table"""
     return f"""#### 📋 Loan Summary
 
-| Attribute | Value |
+| **Attribute** | **Value** |
 |-----------|-------|
 | Account ID | {loan.loan_id} |
 | Customer ID | {loan.customer_id} |
 | Customer Name | {loan.customer_full_name} |
 | DPD | {loan.dpd} days |
-| Outstanding | ₹{loan.outstanding_amount:,.2f} |
-| Loan Amount | ₹{loan.loan_amount:,.2f} |
-| EMI | ₹{loan.emi_amount:,.2f} |
+| Outstanding | ₹{format_indian_currency(loan.outstanding_amount)} |
+| Loan Amount | ₹{format_indian_currency(loan.loan_amount)} |
+| EMI | ₹{format_indian_currency(loan.emi_amount)} |
 | Interest Rate | {loan.interest_rate}% |
 | Secured | {loan.secured_unsecured} |
 | Collateral | {loan.collateral_type} ({loan.collateral_quality}) |

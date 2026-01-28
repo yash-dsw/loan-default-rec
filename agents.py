@@ -180,13 +180,20 @@ class NBAAgent:
         
         # Header with action title
         action_title = parsed.get("action_title", "Recovery Action")
-        output_lines.append(f"### ⚙️ {action_title}")
+        output_lines.append(f"#### Action: {action_title}")
         output_lines.append("")
         
-        # Success Likelihood badge
+        # Success Likelihood and Confidence in compact format
         likelihood = parsed.get("success_likelihood", "Medium")
         likelihood_emoji = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(likelihood, "🟡")
-        output_lines.append(f"**☑ Success Likelihood:** {likelihood_emoji} **{likelihood}**")
+        confidence = parsed.get("confidence", "Medium")
+        confidence_emoji = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(confidence, "🟡")
+        borrower_intent = parsed.get("borrower_intent", "Unknown")
+        intent_emoji = {"Cooperative": "🤝", "Non-responsive": "⚔️", "Evasive": "🏃", "Unknown": "❓"}.get(borrower_intent, "❓")
+        
+        output_lines.append(f"**Recovery Likelihood:** {likelihood_emoji} {likelihood}")
+        output_lines.append(f"**Confidence:** {confidence_emoji} {confidence}")
+        output_lines.append(f"**Borrower:** {intent_emoji} {borrower_intent}")
         output_lines.append("")
         
         # Rationale paragraph (italicized)
@@ -194,17 +201,6 @@ class NBAAgent:
         if rationale:
             output_lines.append(f"*{rationale}*")
             output_lines.append("")
-        
-        # Attribute table (removed SMA/NPA row since all are NPA)
-        confidence = parsed.get("confidence", "Medium")
-        borrower_intent = parsed.get("borrower_intent", "Unknown")
-        confidence_emoji = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(confidence, "🟡")
-        
-        output_lines.append("| Attribute | Value |")
-        output_lines.append("|:----------|:------|")
-        output_lines.append(f"| Confidence | {confidence_emoji} {confidence} |")
-        output_lines.append(f"| Borrower Intent | {borrower_intent} |")
-        output_lines.append("")
         
         # Key Factors section
         key_factors = parsed.get("key_factors", [])
@@ -327,4 +323,65 @@ class NBAAgent:
                             except ValueError:
                                 pass
         
+        # If no factor_weightages provided but we have key_factors, calculate dynamic weightages
+        if not result["factor_weightages"] and result["key_factors"]:
+            result["factor_weightages"] = self._calculate_dynamic_weightages(result["key_factors"])
+        
         return result
+    
+    def _calculate_dynamic_weightages(self, key_factors: list) -> dict:
+        """Calculate dynamic weightages based on key factors identified by the LLM.
+        
+        Assigns weights based on factor importance for recovery decisions.
+        High-priority factors get more weight, remaining is distributed evenly.
+        """
+        weightages = {}
+        
+        # Extract factor names from key_factors list (format: "Factor: Value — Explanation")
+        factor_names = []
+        for factor in key_factors:
+            if ":" in factor:
+                name = factor.split(":")[0].strip()
+                # Normalize common variations
+                name = name.replace(" Score", "").replace(" Count", "").strip()
+                factor_names.append(name)
+        
+        if not factor_names:
+            return weightages
+        
+        # Priority weights for common factors in loan recovery
+        priority_weights = {
+            "DPD": 25,
+            "CIBIL": 20,
+            "Contactability": 20,
+            "Collateral Liquidity": 15,
+            "Collateral": 15,
+            "Broken Promises": 15,
+            "Response": 10,
+            "SARFAESI": 10,
+            "Outstanding": 10,
+            "EMI": 10,
+            "Income": 10,
+        }
+        
+        # Assign weights to factors
+        total_weight = 0
+        assigned_factors = []
+        
+        for name in factor_names:
+            # Find matching priority
+            weight = 10  # Default weight
+            for key, w in priority_weights.items():
+                if key.lower() in name.lower():
+                    weight = w
+                    break
+            weightages[name] = weight
+            total_weight += weight
+            assigned_factors.append(name)
+        
+        # Normalize to 100%
+        if total_weight > 0:
+            for name in assigned_factors:
+                weightages[name] = round((weightages[name] / total_weight) * 100, 1)
+        
+        return weightages

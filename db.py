@@ -18,17 +18,31 @@ def get_db_connection():
     )
     return conn
 
-def get_loan_by_id(account_id: str) -> Optional[LoanInput]:
+def get_loan_by_id(search_term: str) -> Optional[LoanInput]:
     """
-    Fetch a loan record from the database by account_id and map it to LoanInput.
+    Fetch a loan record from the database by account_id, customer_id, or customer_full_name.
+    Searches in order: account_id (exact), customer_id (exact), customer_full_name (case-insensitive partial match).
     """
     conn = None
     try:
         conn = get_db_connection()
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Try account_id first (exact match)
             query = "SELECT * FROM loan_delinquency_cases WHERE account_id = %s"
-            cur.execute(query, (account_id,))
+            cur.execute(query, (search_term,))
             row = cur.fetchone()
+            
+            # Try customer_id if not found
+            if not row:
+                query = "SELECT * FROM loan_delinquency_cases WHERE customer_id = %s"
+                cur.execute(query, (search_term,))
+                row = cur.fetchone()
+            
+            # Try customer_full_name (case-insensitive, partial match)
+            if not row:
+                query = "SELECT * FROM loan_delinquency_cases WHERE LOWER(customer_full_name) LIKE LOWER(%s)"
+                cur.execute(query, (f"%{search_term}%",))
+                row = cur.fetchone()
             
             if not row:
                 return None
